@@ -29,6 +29,7 @@
 #include <asm/io.h>
 #include <asm/gpio.h>
 #include <mach/vreg.h>
+#include <linux/bln2.h>
 
 #include <linux/slab.h>
 
@@ -86,12 +87,10 @@ extern int board_hw_revision;
 
 enum {
 	TKEY_LED_OFF,
-	TKEY_LED_ON,
-	TKEY_LED_SUSPEND,
-	TKEY_LED_RESUME,
-	TKEY_LED_FORCEDOFF
+	TKEY_LED_ON
 };
-static unsigned int led_state = TKEY_LED_OFF;
+
+static unsigned int led_state;
 
 static int touchkey_status[MELFAS_MAX_KEYS]={0,};
 static int preKeyID = 0;
@@ -648,6 +647,57 @@ static ssize_t touch_led_control(struct device *dev, struct device_attribute *at
 
 	return size;
 }
+
+#ifdef CONFIG_GENERIC_BLN2
+static int melfas_enable_touchkey_bln(int led_mask)
+{
+	return 0;
+}
+
+static int melfas_disable_touchkey_bln(int led_mask)
+{
+	return 0;
+}
+
+static int melfas_power_on(void)
+{
+	int rc;
+
+	rc = vreg_enable(vreg_ldo2);
+
+	if (rc) {
+		pr_err("%s: LDO2 vreg enable failed (%d)\n",
+	               __func__, rc);
+		return rc;
+	}
+
+	return 0;
+}
+
+static int melfas_power_off(void)
+{
+	int rc;
+
+	rc = vreg_disable(vreg_ldo2);
+
+	if (rc) {
+		pr_err("%s: LDO2 vreg disable failed (%d)\n",
+		       __func__, rc);
+		return rc;
+	}
+
+	return 0;
+}
+
+static struct bln_implementation melfas_touchkey_bln = {
+	.enable = melfas_enable_touchkey_bln,
+	.disable = melfas_disable_touchkey_bln,
+	.power_on = melfas_power_on,
+	.power_off = melfas_power_off,
+	.led_count = 1
+};
+#endif
+
 #ifdef QT_ATCOM_TEST
 
 static ssize_t key_threshold_show(struct device *dev, struct device_attribute *attr, char *buf)
@@ -2436,6 +2486,10 @@ int melfas_mcs8000_ts_probe(struct i2c_client *client,
 	register_early_suspend(&melfas_mcs8000_ts->early_suspend);
 #endif	/* CONFIG_HAS_EARLYSUSPEND */
 
+#ifdef CONFIG_GENERIC_BLN2
+	register_bln_implementation(&melfas_touchkey_bln);
+#endif
+
 #ifdef AUTO_POWER_ON_OFF_FLAG
 	init_timer(&poweroff_touch_timer);
 	poweroff_touch_timer.function = poweroff_touch_timer_handler;
@@ -2501,17 +2555,6 @@ int melfas_mcs8000_ts_suspend(pm_message_t mesg)
 	gpio_tlmm_config(GPIO_CFG(GPIO_I2C0_SDA, 0, GPIO_CFG_OUTPUT, GPIO_CFG_NO_PULL, GPIO_CFG_16MA),GPIO_CFG_ENABLE);
 
 	mcsdl_vdd_off();
-
-	if(led_state == TKEY_LED_ON) {
-		rc = vreg_disable(vreg_ldo2);
-        
-        printk("touch_led_control : ts_suspend forced off! rc = %d \n", rc);              
-
-		if (rc) 
-			pr_err("%s: LDO2 vreg disable failed (%d)\n", __func__, rc);		
-        else 
-            led_state = TKEY_LED_FORCEDOFF;
-	}
         
 	gpio_set_value(GPIO_I2C0_SCL, 0);  // TOUCH SCL DIS
 	gpio_set_value(GPIO_I2C0_SDA, 0);  // TOUCH SDA DIS
@@ -2539,18 +2582,7 @@ int melfas_mcs8000_ts_resume()
     msleep(200);
 
     melfas_mcs8000_ts->suspended = false;
-    enable_irq(melfas_mcs8000_ts->client->irq);  
-
-    if(led_state == TKEY_LED_FORCEDOFF) { 
-        rc = vreg_enable(vreg_ldo2); 
-
-        printk("%s TKEY_LED_FORCEDOFF  rc = %d \n", __func__,rc);               
-
-        if (rc)  
-            pr_err("%s: LDO2 vreg disable failed (%d)\n", __func__, rc);		 
-        else  
-            led_state = TKEY_LED_ON; 
-    } 
+    enable_irq(melfas_mcs8000_ts->client->irq);
    
     return 0;
 }
